@@ -1,0 +1,71 @@
+-- 1. CREAR LA BASE DE DATOS (Por si no la has creado)
+CREATE DATABASE IF NOT EXISTS hospital_biomedica;
+USE hospital_biomedica;
+
+-- 2. CREAR TABLA: SUPPLIER (Proveedores)
+CREATE TABLE supplier (
+    id_supplier INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100),
+    phone VARCHAR(50),
+    technical_support VARCHAR(100),
+    phone_technical_support VARCHAR(50),
+    email_technical_support VARCHAR(100)
+);
+
+-- 3. CREAR TABLA: EQUIPMENT (Equipos médicos)
+CREATE TABLE equipment (
+    id_equipment INT AUTO_INCREMENT PRIMARY KEY, -- Este número corto irá en el QR
+    serial_number_factory VARCHAR(50) UNIQUE,
+    name VARCHAR(100) NOT NULL,
+    brand VARCHAR(50),
+    model VARCHAR(50),
+    location VARCHAR(100),
+    year_manufacture INT,
+    state VARCHAR(20) DEFAULT 'ok',
+    id_supplier INT,
+    
+    -- Definimos la relación con Supplier (N a 1)
+    FOREIGN KEY (id_supplier) REFERENCES supplier(id_supplier) ON DELETE SET NULL
+);
+
+-- 4. CREAR TABLA: INPUTS (Insumos y Repuestos)
+CREATE TABLE inputs (
+    id_inputs INT AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    location VARCHAR(100),
+    stock INT DEFAULT 0
+);
+
+-- 5. CREAR TABLA: WORK ORDER (Órdenes de trabajo / Historial)
+CREATE TABLE work_order (
+    id_work_order INT AUTO_INCREMENT PRIMARY KEY,
+    id_equipment INT NOT NULL,
+    date_work_order_start DATETIME NOT NULL,
+    date_work_order_finish DATETIME,
+    type_maintenance VARCHAR(20), -- 'preventive' o 'corrective'
+    description_fault TEXT,
+    description_work_done TEXT,
+    technical_responsible VARCHAR(100),
+    
+    -- Definimos la relación con Equipment (N a 1)
+    FOREIGN KEY (id_equipment) REFERENCES equipment(id_equipment) ON DELETE CASCADE
+);
+
+-- 6. CREAR TABLA INTERMEDIA: WORK_ORDER_INPUTS (Relación N a N)
+CREATE TABLE work_order_inputs (
+    id_work_order INT NOT NULL,
+    id_inputs INT NOT NULL,
+    quantity_used INT NOT NULL DEFAULT 1,
+    
+    -- La llave primaria es la combinación de ambas para que no se dupliquen
+    PRIMARY KEY (id_work_order, id_inputs),
+    
+    -- Relaciones (Llaves foráneas)
+    FOREIGN KEY (id_work_order) REFERENCES work_order(id_work_order) ON DELETE CASCADE,
+    FOREIGN KEY (id_inputs) REFERENCES inputs(id_inputs) ON DELETE RESTRICT
+);
+
+
+password postgres: 'admin3L@n12013' desde terminal y de dbearb ce
