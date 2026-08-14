@@ -297,7 +297,8 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
                     w.date_work_start AS 'Fecha Inicio',
                     w.date_work_finish AS 'Fecha Fin',
                     -- Calculamos el tiempo muerto en horas con un decimal 
-                    ROUND(TIMESTAMPDIFF(MINUTE, w.date_work_start, w.date_work_finish)/60,1) AS 'Tiempo Muerto (Horas)',
+                    TIMESTAMPDIFF(MINUTE, w.date_work_start, w.date_work_finish) AS 'Minutos_Totales',
+                    -- TIMESTAMPDIFF(MINUTE, w.date_work_start, w.date_work_finish) AS 'erTiempo Muto (Horas)',
                     w.description_fault AS 'Falla Reportada',
                     w.description_work_done AS 'Tarea Ejecutada',
                     w.technical_responsible AS 'Técnico'
@@ -307,39 +308,50 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
                 """
                 df_historial = pd.read_sql(query_historial, conexion)
                 conexion.close()
-                 
+
+                             
+                
                 # =========================================================================
-                # DESIGN REFACTOR: EXPANDABLE TIMELINE VIEW (ANTI-SCROLL UX)
+                # CORRECCIÓN DE MÉTRICAS Y RENDERIZADO VISUAL (CON CIERRE TRY/EXCEPT)
                 # =========================================================================
                 st.write("---")
                 st.subheader(f"📊 Historial Clínico de Reparaciones (ID QR: {id_eq_final})")
                 
                 if not df_historial.empty:
-                    # 1. Indicador estético superior de Horas Muertas
-                    total_horas_muertas = df_historial['Tiempo Muerto (Horas)'].sum()
-                    st.metric(label="🚨 Tiempo Muerto Total Acumulado en el Activo", value=f"{total_horas_muertas} Horas")
+                    # 1. Sumamos todos los minutos acumulados en el historial clínico usando la nueva columna
+                    total_minutos_acumulados = df_historial['Minutos_Totales'].sum()
+                    global_horas = total_minutos_acumulados // 60
+                    global_minutos = total_minutos_acumulados % 60
+                    
+                    # Dibujamos el indicador grande arriba en formato humano
+                    st.metric(label="🚨 Tiempo Muerto Total Acumulado en el Activo", value=f"{global_horas} hs {global_minutos} min")
                     
                     st.markdown("#### ⏳ Línea de Tiempo de Intervenciones Técnicas")
-                    st.caption("Haz clic en cualquier orden de trabajo para desplegar el reporte técnico completo sin scroll horizontal.")
+                    st.caption("Haz clic en cualquier orden de trabajo para desplegar el reporte técnico completo sin scroll.")
                     
                     # 2. Renderizamos cada fila como un bloque desplegable vertical (Estilo Acordeón)
                     for idx, fila in df_historial.iterrows():
-                        # Creamos una etiqueta limpia para el título del bloque
+                        # Procesamos de forma segura los minutos que viajan de la base de datos
+                        minutos_puros = int(fila['Minutos_Totales']) if fila['Minutos_Totales'] else 0
+                        
+                        # División matemática exacta para separar horas y minutos residuales
+                        horas_enteras = minutos_puros // 60
+                        minutos_sobrantes = minutos_puros % 60
+                        tiempo_formateado = f"{horas_enteras} hs {minutos_sobrantes} min"
+                        
                         titulo_orden = f"🛠️ Orden N° {fila['N° Orden']} | Tipo: {fila['Tipo']} | Fecha: {fila['Fecha Inicio']}"
                         
-                        # El expander encapsula la información hacia abajo de forma amigable
                         with st.expander(titulo_orden):
-                            # Diseñamos una grilla interna limpia para los metadatos de la orden
                             c1, c2, c3 = st.columns(3)
                             with c1:
                                 st.markdown(f"**📅 Fecha Finalización:** {fila['Fecha Fin'] if fila['Fecha Fin'] else '⚠️ En Proceso'}")
                             with c2:
-                                st.markdown(f"**⏳ Horas Fuera de Servicio:** `{fila['Tiempo Muerto (Horas)']} hs`")
+                                # Mostramos el tiempo traducido a formato humano
+                                st.markdown(f"**⏳ Horas Fuera de Servicio:** `{tiempo_formateado}`")
                             with c3:
                                 st.markdown(f"**👨‍🔧 Técnico Responsable:** {fila['Técnico']}")
                             
                             st.write("---")
-                            # Los textos largos ahora se leen de forma natural hacia abajo como un informe médico
                             st.markdown("**🚨 Falla Reportada por el Servicio:**")
                             st.info(fila['Falla Reportada'])
                             
@@ -348,5 +360,6 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
                 else:
                     st.info("ℹ️ Este activo biomédico no registra ninguna intervención técnica en el historial (Hoja de vida limpia).")
                     
+  
     except Exception as e:
-        st.error(f"❌ Error crítico en el módulo de búsqueda indexada: {e}")
+        st.error(f"❌ Error al consultar la base de datos de historial: {e}")
