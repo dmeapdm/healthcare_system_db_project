@@ -34,8 +34,11 @@ opcion = st.sidebar.selectbox("Módulos del Sistema:", [
     "📊 Inventario (Estándar OMS)",
     "🏭 Registro de Proveedores",
     "📝 Registro de Equipos Nuevos",
-    "👨‍🔧 Historial de Reparaciones (Taller)"
+    "👨‍🔧 Historial de Reparaciones (Taller)",
+    "📝 Nueva Orden de Trabajo" # <-- NUEVA POSTA OPERATIVA DE HOY
 ])
+
+
 # =========================================================================
 # 📊 MÓDULO 1: VER INVENTARIO CON CAMPOS DE LA OMS
 # =========================================================================
@@ -363,3 +366,108 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
   
     except Exception as e:
         st.error(f"❌ Error al consultar la base de datos de historial: {e}")
+
+# =========================================================================
+# 📝 MÓDULO 5: DATA ENTRY - APERTURA DE ORDEN POR NÚMERO DE SERIE (UPDATED)
+# =========================================================================
+elif opcion == "📝 Nueva Orden de Trabajo":
+    st.title("📝 Data Entry - Apertura y Cierre de Orden de Trabajo")
+    st.markdown("#### *Buscador indexado por Número de Serie para asignación rápida de intervenciones.*")
+    st.write("---")
+    
+    st.subheader("🔍 Identificación Obligatoria del Activo")
+    
+    # 1. Reemplazamos la lista infinita por un buscador de texto libre por Serie Exacta
+    serie_orden = st.text_input("🔌 Ingresa el Número de Serie de Fábrica del Equipo:", placeholder="Ej: SN-MIND-9982 o el código exacto...").strip()
+    
+    # Inicializamos la variable que contendrá el ID del equipo encontrado
+    id_equipment_encontrado = None
+    
+    if serie_orden:
+        try:
+            # Validamos en tiempo real si la serie existe en la base de datos
+            conexion = conectar_base_datos()
+            mensajero = conexion.cursor(dictionary=True)
+            query_buscar_serie = "SELECT id_equipment, type_device, brand, model, location FROM equipment WHERE serial_number_factory = %s;"
+            mensajero.execute(query_buscar_serie, (serie_orden,))
+            activo_encontrado = mensajero.fetchone()
+            mensajero.close()
+            conexion.close()
+            
+            if activo_encontrado:
+                id_equipment_encontrado = activo_encontrado['id_equipment']
+                # Le mostramos al técnico una tarjeta estéticamente impecable confirmando el equipo
+                st.success(
+                    f"✅ **Equipo Vinculado Exitosamente:** {activo_encontrado['type_device']} "
+                    f"| Marca: {activo_encontrado['brand']} | Modelo: {activo_encontrado['model']} "
+                    f"| Servicio: {activo_encontrado['location']} (ID QR: {id_equipment_encontrado})"
+                )
+            else:
+                st.error("❌ El Número de Serie ingresado no coincide con ningún activo en el inventario actual. Verifica los dígitos.")
+        except Exception as e:
+            st.error(f"❌ Error al consultar el índice de series: {e}")
+            
+    st.write("---")
+    st.subheader("📋 Datos del Reporte Técnico")
+    
+    col_tipo_maint, col_tecnico = st.columns(2)
+    with col_tipo_maint:
+        tipo_maint = st.selectbox("⚙️ Tipo de Intervención:", ["corrective", "preventive"])
+    with col_tecnico:
+        tecnico_firmante = st.text_input("👤 Técnico Responsable de la Reparación (Tu Nombre):").strip()
+        
+    st.write("---")
+    st.subheader("⏱️ Cronómetro de Intervención (Cálculo de Tiempo Muerto)")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        fecha_inicio = st.date_input("📅 Fecha de Inicio del Trabajo:")
+        hora_inicio = st.time_input("⏰ Hora de Inicio:")
+    with col_f2:
+        fecha_fin = st.date_input("📅 Fecha de Finalización:")
+        hora_fin = st.time_input("⏰ Hora de Finalización:")
+        
+    st.write("---")
+    st.subheader("📝 Detalles de Ingeniería Clínica")
+    falla_reportada = st.text_area("🚨 Falla Reportada / Síntomas detectados por el servicio:")
+    trabajo_realizado = st.text_area("✅ Trabajo Técnico Ejecutado y Repuestos Consumidos:")
+    
+    st.write("---")
+    
+    if st.button("🚀 Registrar Orden de Trabajo en el Servidor", use_container_width=True):
+        # Regla de Validación de Negocio: No se puede guardar si no se identificó un equipo válido primero
+        if id_equipment_encontrado is None:
+            st.error("🚫 Operación bloqueada: Debes ingresar un Número de Serie válido y existente para amarrar la orden de trabajo.")
+        elif tecnico_firmante and falla_reportada and trabajo_realizado:
+            try:
+                # Combinamos de forma segura la fecha y hora seleccionada en Streamlit
+                datetime_inicio = f"{fecha_inicio} {hora_inicio}"
+                datetime_fin = f"{fecha_fin} {hora_fin}"
+                
+                conexion = conectar_base_datos()
+                mensajero = conexion.cursor()
+                
+                query_insert_order = """
+                INSERT INTO work_order (
+                    id_equipment, date_work_start, date_work_finish, 
+                    type_maintenance, description_fault, description_work_done, technical_responsible
+                ) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s);
+                """
+                
+                datos_orden = (
+                    id_equipment_encontrado, datetime_inicio, datetime_fin, 
+                    tipo_maint, falla_reportada, trabajo_realizado, tecnico_firmante
+                )
+                
+                mensajero.execute(query_insert_order, datos_orden)
+                conexion.commit()
+                mensajero.close()
+                conexion.close()
+                
+                st.success(f"🎉 ¡Orden de trabajo registrada con éxito! El sistema vinculó el ID {id_equipment_encontrado} y calculó el tiempo muerto.")
+                st.balloons()
+                
+            except Exception as e:
+                st.error(f"❌ Error al intentar impactar la orden en MySQL: {e}")
+        else:
+            st.warning("⚠️ La Falla Reportada, Tarea Ejecutada y el Nombre del Técnico son campos obligatorios para el reporte legal.")
