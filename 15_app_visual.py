@@ -207,71 +207,116 @@ elif opcion == "📝 Registro de Equipos Nuevos":
                 st.error(f"❌ Error en MySQL: {e}")
 
 
-
 # =========================================================================
-# 👨‍🔧 MÓDULO 4: HISTORIAL CLÍNICO Y RELOJ DE TIEMPO MUERTO (NUEVO)
+# 👨‍🔧 MÓDULO 4: HISTORIAL CLÍNICO CON BUSCADOR INTELIGENTE ESCALABLE (UPDATED)
 # =========================================================================
-
 elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
     st.title("👨‍🔧 Historial Clínico de Equipamiento Médico")
     st.markdown("#### *Trazabilidad de mantenimiento preventivo/correctivo y auditoría de tiempo muerto.*")
     st.write("---")
     
+    st.subheader("🔍 Panel de Búsqueda Avanzada e Historial por Activo")
+    
+    # 1. Creamos una fila de 3 columnas para los filtros escalables en la interfaz
+    col_txt, col_tipo, col_ubica = st.columns([2, 1, 1])
+    
+    with col_txt:
+        # Buscador por texto libre (Acepta Serie, Marca o Modelo)
+        busqueda_texto = st.text_input("📝 Buscar por N° de Serie, Marca o Modelo:", placeholder="Ej: SN-MIND o Mindray...")
+        
     try:
-        # Paso 1: Traemos la lista de equipos cargados para que el técnico elija uno
+        # Traemos de forma única los tipos y ubicaciones que existen hoy cargados en MySQL
         conexion = conectar_base_datos()
-        query_equipos = "SELECT id_equipment, brand, model, serial_number_factory FROM equipment;"
-        df_eq = pd.read_sql(query_equipos, conexion)
+        
+        df_tipos = pd.read_sql("SELECT DISTINCT type_device FROM equipment;", conexion)
+        df_ubicas = pd.read_sql("SELECT DISTINCT location FROM equipment;", conexion)
         conexion.close()
         
-        # Armamos un formato limpio para el buscador visual: "ID - Marca Modelo (Serie)"
-        lista_equipos = []
-        for idx, fila in df_eq.iterrows():
-            lista_equipos.append(f"{fila['id_equipment']} - {fila['brand']} {fila['model']} ({fila['serial_number_factory']})")
-            
-        # Dibujamos un selector en la pantalla de la notebook
-        equipo_seleccionado = st.selectbox("🔍 Selecciona el equipo médico a auditar:", lista_equipos)
+        # Armamos las listas de filtros agregando la opción universal "Todos"
+        lista_tipos = ["-- Todos los Dispositivos --"] + list(df_tipos['type_device'].values)
+        lista_ubicas = ["-- Todas las Ubicaciones --"] + list(df_ubicas['location'].values)
         
-        if equipo_seleccionado:
-            # Cortamos el texto para extraer únicamente el número de ID corto (El que irá en el QR)
-            id_eq_filtrado = int(equipo_seleccionado.split(" - ")[0])
+        with col_tipo:
+            filtro_tipo = st.selectbox("⚙️ Filtrar por Tipo:", lista_tipos)
+        with col_ubica:
+            filtro_ubica = st.selectbox("📍 Filtrar por Servicio/Ubicación:", lista_ubicas)
             
+        # =========================================================================
+        # CONSTRUCCIÓN DE LA QUERY DINÁMICA CON PATRÓN 'LIKE'
+        # =========================================================================
+        # Iniciamos la consulta base que traerá los equipos que coincidan con los filtros
+        query_busqueda = "SELECT id_equipment, type_device, brand, model, serial_number_factory, location FROM equipment WHERE 1=1"
+        parametros = []
+        
+        # Si el usuario escribió algo en la barra de búsqueda, aplicamos el operador LIKE de MySQL
+        if busqueda_texto:
+            query_busqueda += " AND (serial_number_factory LIKE %s OR brand LIKE %s OR model LIKE %s)"
+            termino_busqueda = f"%{busqueda_texto}%"
+            parametros.extend([termino_busqueda, termino_busqueda, termino_busqueda])
+            
+        # Filtros directos por desplegable
+        if filtro_tipo != "-- Todos los Dispositivos --":
+            query_busqueda += " AND type_device = %s"
+            parametros.append(filtro_tipo)
+            
+        if filtro_ubica != "-- Todas las Ubicaciones --":
+            query_busqueda += " AND location = %s"
+            parametros.append(filtro_ubica)
+            
+        # Ejecutamos la búsqueda de los equipos filtrados
+        conexion = conectar_base_datos()
+        mensajero = conexion.cursor(dictionary=True)
+        mensajero.execute(query_busqueda, tuple(parametros))
+        equipos_encontrados = mensajero.fetchall()
+        mensajero.close()
+        conexion.close()
+        
+        # 2. Si la búsqueda arrojó resultados, los procesamos de forma limpia
+        if equipos_encontrados:
             st.write("---")
-            st.subheader(f"📋 Hoja de Vida Técnico-Médica (ID QR: {id_eq_filtrado})")
+            st.markdown(f"#### 📋 Resultados Encontrados ({len(equipos_encontrados)} activos)")
             
-            conexion = conectar_base_datos()
-            
-            # 🛠️ TU DESAFÍO: Completa la consulta SQL con las uniones (JOIN) y el FILTRO WHERE
-            query_historial = f"""
-            SELECT 
-                w.id_work_order AS 'N° Orden',
-                w.type_maintenance AS 'Tipo',
-                w.date_work_start AS 'Fecha Inicio',
-                w.date_work_finish AS 'Fecha Fin',
-                -- Calculamos el reloj matemático de horas muertas que estuvo el equipo parado:
-                TIMESTAMPDIFF(HOUR, w.date_work_start, w.date_work_finish) AS 'Tiempo Muerto (Horas)',
-                w.description_fault AS 'Falla Reportada',
-                w.description_work_done AS 'Tarea Ejecutada',
-                w.technical_responsible AS 'Técnico'
-            FROM work_order w
-            JOIN equipment e ON w.id_equipment = e.id_equipment
-            WHERE e.id_equipment = {id_eq_filtrado}
-            ORDER BY w.date_work_start DESC;
-            """
-            
-            df_historial = pd.read_sql(query_historial, conexion)
-            conexion.close()
-            
-            # Si el equipo tiene reparaciones, las mostramos. Si no, avisamos limpiamente.
-            if not df_historial.empty:
-                # Mostramos la grilla interactiva en la web
-                st.dataframe(df_historial, use_container_width=True)
+            # Mapeamos los resultados para que el técnico elija el equipo exacto de la lista ya reducida
+            opciones_filtradas = {}
+            for eq in equipos_encontrados:
+                label = f"ID: {eq['id_equipment']} | {eq['type_device']} - {eq['brand']} {eq['model']} (Serie: {eq['serial_number_factory']}) | Ubicación: {eq['location']}"
+                opciones_filtradas[label] = eq['id_equipment']
                 
-                # Métrica de Alerta Médica: Calculamos el total de horas acumuladas fuera de servicio
-                total_horas_muertas = df_historial['Tiempo Muerto (Horas)'].sum()
-                st.metric(label="🚨 Tiempo Muerto Acumulado en el Historial", value=f"{total_horas_muertas} Horas")
-            else:
-                st.info("ℹ️ Este activo biomédico no registra ninguna intervención técnica en el historial (Hoja de vida limpia).")
+            seleccion_final = st.selectbox("👇 Selecciona el equipo exacto para desplegar su Hoja de Vida:", list(opciones_filtradas.keys()))
+            
+            if seleccion_final:
+                id_eq_final = opciones_filtradas[seleccion_final]
                 
+                # Desplegamos las Órdenes de Trabajo del equipo seleccionado con el reloj de tiempo muerto
+                conexion = conectar_base_datos()
+                query_historial = f"""
+                SELECT 
+                    w.id_work_order AS 'N° Orden',
+                    w.type_maintenance AS 'Tipo',
+                    w.date_work_start AS 'Fecha Inicio',
+                    w.date_work_finish AS 'Fecha Fin',
+                    TIMESTAMPDIFF(HOUR, w.date_work_start, w.date_work_finish) AS 'Tiempo Muerto (Horas)',
+                    w.description_fault AS 'Falla Reportada',
+                    w.description_work_done AS 'Tarea Ejecutada',
+                    w.technical_responsible AS 'Técnico'
+                FROM work_order w
+                WHERE w.id_equipment = {id_eq_final}
+                ORDER BY w.date_work_start DESC;
+                """
+                df_historial = pd.read_sql(query_historial, conexion)
+                conexion.close()
+                
+                st.write("---")
+                st.subheader(f"📊 Historial Clínico de Reparaciones (ID QR: {id_eq_final})")
+                
+                if not df_historial.empty:
+                    st.dataframe(df_historial, use_container_width=True)
+                    total_horas_muertas = df_historial['Tiempo Muerto (Horas)'].sum()
+                    st.metric(label="🚨 Tiempo Muerto Acumulado en el Historial", value=f"{total_horas_muertas} Horas")
+                else:
+                    st.info("ℹ️ Este activo biomédico no registra ninguna intervención técnica en el historial (Hoja de vida limpia).")
+        else:
+            st.warning("⚠️ No se encontraron equipos médicos que coincidan con los criterios de búsqueda introducidos.")
+            
     except Exception as e:
-        st.error(f"❌ Error al conectar con el módulo de taller: {e}")
+        st.error(f"❌ Error crítico en el módulo de búsqueda indexada: {e}")
