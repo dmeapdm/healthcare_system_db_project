@@ -14,6 +14,10 @@ It solves two real-world hospital problems:
 import streamlit as st
 import mysql.connector
 import pandas as pd
+import os
+from dotenv import load_dotenv
+
+
 
 # =========================================================================
 # 🏗️ STAGE 1: WEB INFRASTRUCTURE AND VIEWPORT CONFIGURATION
@@ -29,6 +33,7 @@ st.set_page_config(
 # =========================================================================
 # 🔌 STAGE 2: SECURE DATABASE CONNECTOR PIPELINE
 # =========================================================================
+load_dotenv()  # carga las variables del archivo .env
 def conectar_base_datos():
     """
     Establishes the communication bridge with the local MySQL server.
@@ -36,12 +41,13 @@ def conectar_base_datos():
     This bypasses Ubuntu's root auth_socket guard, allowing frictionless 
     TCP/IP internal piping.
     """
-    return mysql.connector.connect(
-        host="localhost",
-        user="tecnico_biomedica",   # Custom secure app proxy user
-        password="biomedica123",    # Application data entry token
-        database="healthcare_system_db"
-    )
+     return mysql.connector.connect(
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME")
+        )
+    
 
 # =========================================================================
 # 🎛️ STAGE 3: INTERACTIVE NAVIGATION SIDEBAR (UX LAYER)

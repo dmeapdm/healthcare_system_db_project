@@ -1,0 +1,5 @@
+﻿,ID QR,Fabricante,Modelo,N° de Serie,Energía (OMS),Año Fab.,Años de Antigüedad,Estado,Servicio,ID Proveedor,Última Actualización
+0,1,Mindray,UMEC 12,SN-MIND-9982,220V / Batería interna,2022,4,OK,Quirofano 1,1,2026-08-13T14:43:17.000
+1,2,Messer,Oxymed 200,SN-MESS-0041,220V / Batería interna,2019,7,OK,Terapia Intensiva - Cama 4,2,2026-08-13T14:43:17.000
+2,4,MEDITEA,MAGNETHERP 330,608807110850,220V / Batería interna,2015,11,OK,Consultorios,1,2026-08-13T14:43:17.000
+3,5,TECME,NEUMOVENT,12345678,220V / Batería interna,2022,4,OK,UCI,3,2026-08-13T15:16:36.000

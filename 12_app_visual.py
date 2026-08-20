@@ -11,9 +11,27 @@ It solves two real-world hospital problems:
    through a dedicated local application pipeline ('tecnico_biomedica') to bypass auth_socket blocks.
 """
 
+
 import streamlit as st
 import mysql.connector
 import pandas as pd
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # carga las variables del archivo .env
+
+def conectar_base_datos():
+    return mysql.connector.connect(
+        host=os.getenv("DB_HOST"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME")
+    )
+
+
+
+
+
 
 # =========================================================================
 # 🏗️ STAGE 1: WEB INFRASTRUCTURE AND VIEWPORT CONFIGURATION
@@ -37,12 +55,12 @@ def conectar_base_datos():
     TCP/IP internal piping.
     """
     return mysql.connector.connect(
-        host="localhost",
-        user="tecnico_biomedica",   # Custom secure app proxy user
-        password="biomedica123",    # Application data entry token
-        database="healthcare_system_db"
-    )
-
+           host=os.getenv("DB_HOST"),
+           user=os.getenv("DB_USER"),
+           password=os.getenv("DB_PASSWORD"),
+           database=os.getenv("DB_NAME")
+       )
+   
 # =========================================================================
 # 🎛️ STAGE 3: INTERACTIVE NAVIGATION SIDEBAR (UX LAYER)
 # =========================================================================

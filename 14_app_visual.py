@@ -14,18 +14,20 @@ It solves two real-world hospital problems:
 import streamlit as st
 import mysql.connector
 import pandas as pd
+import os
+from dotenv import load_dotenv
 
 # Configuración estructural de la interfaz en tu ThinkPad
 st.set_page_config(page_title="CMMS - Estándar OMS", page_icon="🏥", layout="wide")
 
 # Conector seguro usando el proxy local 'tecnico_biomedica' libre de bloqueos de Linux
 def conectar_base_datos():
-    return mysql.connector.connect(
-        host="localhost",
-        user="tecnico_biomedica",
-        password="biomedica123",
-        database="healthcare_system_db"
-    )
+     return mysql.connector.connect(
+                host=os.getenv("DB_HOST"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                database=os.getenv("DB_NAME")
+            )
 
 # --- MENÚ LATERAL DE ROUTING (Añadimos tu nuevo Paso 2 de forma independiente) ---
 st.sidebar.markdown("## 🏥 Gestión Biomédica (R&D Log)")
