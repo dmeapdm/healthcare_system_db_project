@@ -15,6 +15,7 @@ import streamlit as st
 import mysql.connector
 import pandas as pd
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()  # carga las variables del archivo .env
@@ -295,23 +296,22 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
                 
                 # Desplegamos las Órdenes de Trabajo del equipo seleccionado con el reloj de tiempo muerto
                 conexion = conectar_base_datos()
-                query_historial = f"""
+                query_historial = """
                 SELECT 
                     w.id_work_order AS 'N° Orden',
                     w.type_maintenance AS 'Tipo',
                     w.date_work_start AS 'Fecha Inicio',
                     w.date_work_finish AS 'Fecha Fin',
-                    -- Calculamos el tiempo muerto en horas con un decimal 
+                    -- Calculamos el tiempo muerto en minutos
                     TIMESTAMPDIFF(MINUTE, w.date_work_start, w.date_work_finish) AS 'Minutos_Totales',
-                    -- TIMESTAMPDIFF(MINUTE, w.date_work_start, w.date_work_finish) AS 'erTiempo Muto (Horas)',
                     w.description_fault AS 'Falla Reportada',
                     w.description_work_done AS 'Tarea Ejecutada',
                     w.technical_responsible AS 'Técnico'
                 FROM work_order w
-                WHERE w.id_equipment = {id_eq_final}
+                WHERE w.id_equipment = %s
                 ORDER BY w.date_work_start DESC;
                 """
-                df_historial = pd.read_sql(query_historial, conexion)
+                df_historial = pd.read_sql(query_historial, conexion, params=(id_eq_final,))
                 conexion.close()
 
                              
@@ -407,7 +407,18 @@ elif opcion == "📝 Nueva Orden de Trabajo":
         
     falla_reportada = st.text_area("🚨 Falla Reportada / Síntomas:")
     trabajo_realizado = st.text_area("✅ Trabajo Técnico Ejecutado:")
-    
+
+    # 💡 REINCORPORACIÓN CRÍTICA: Cronómetro Manual Retroactivo (Fecha y Hora Exactas)
+    st.write("---")
+    st.subheader("⏱️ Cronómetro de Intervención (Cálculo de Tiempo Muerto)")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        fecha_inicio = st.date_input("📅 Fecha de Inicio del Trabajo:")
+        hora_inicio = st.time_input("⏰ Hora de Inicio:")
+    with col_f2:
+        fecha_fin = st.date_input("📅 Fecha de Finalización:")
+        hora_fin = st.time_input("⏰ Hora de Finalización:")
+
     # --- TU MEJORA: AGREGAR INSUMOS DIRECTO POR CÓDIGO INTERNO ---
     st.write("---")
     st.subheader("📦 Consumo de Repuestos e Insumos Clínicos")
@@ -458,15 +469,22 @@ elif opcion == "📝 Nueva Orden de Trabajo":
                 
     st.write("---")
     if st.button("🚀 Registrar Orden y Descontar Almacén", use_container_width=True):
-        if id_equipment_encontrado is None: st.error("🚫 Operación bloqueada: Se necesita un Número de Serie de equipo válido.")
-        elif not id_insumos_finales: st.error("🚫 Operación bloqueada: Debes adherir al menos un repuesto por código.")
+        # Combinamos fecha + hora en un único datetime real, uno para inicio y otro para fin
+        datetime_inicio = datetime.combine(fecha_inicio, hora_inicio)
+        datetime_fin = datetime.combine(fecha_fin, hora_fin)
+
+        if id_equipment_encontrado is None:
+            st.error("🚫 Operación bloqueada: Se necesita un Número de Serie de equipo válido.")
+        elif datetime_fin < datetime_inicio:
+            st.error("🚫 La fecha/hora de finalización no puede ser anterior a la de inicio. Revisá el cronómetro.")
+        #elif not id_insumos_finales: st.error("🚫 Operación bloqueada: Debes adherir al menos un repuesto por código.")
         elif tecnico_firmante and falla_reportada and trabajo_realizado:
             try:
                 conexion = conectar_base_datos()
                 mensajero = conexion.cursor()
                 
-                query_insert_order = "INSERT INTO work_order (id_equipment, date_work_start, date_work_finish, type_maintenance, description_fault, description_work_done, technical_responsible) VALUES (%s, NOW(), NOW(), %s, %s, %s, %s);"
-                mensajero.execute(query_insert_order, (id_equipment_encontrado, tipo_maint, falla_reportada, trabajo_realizado, tecnico_firmante))
+                query_insert_order = "INSERT INTO work_order (id_equipment, date_work_start, date_work_finish, type_maintenance, description_fault, description_work_done, technical_responsible) VALUES (%s, %s, %s, %s, %s, %s, %s);"
+                mensajero.execute(query_insert_order, (id_equipment_encontrado, datetime_inicio, datetime_fin, tipo_maint, falla_reportada, trabajo_realizado, tecnico_firmante))
                 id_wo = mensajero.lastrowid
                 
                 # Bucle transaccional sobre tus repuestos adheridos
