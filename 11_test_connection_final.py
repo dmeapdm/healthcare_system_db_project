@@ -1,18 +1,13 @@
-import streamlit as st
 import mysql.connector
-import pandas as pd
-import os
-from dotenv import load_dotenv
 
-load_dotenv()  # carga las variables del archivo .env
+# 1. ABRIR LA PUERTA (Conexión)
+conexion = mysql.connector.connect(
+    host="localhost",
+    user="tecnico_biomedica",
+    password="biomedica123",
+    database="healthcare_system_db"
+)
 
-def conectar_base_datos():
-    return mysql.connector.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        database=os.getenv("DB_NAME")
-    )
 
 # 2. EL MENSAJERO (Cursor)
 mensajero = conexion.cursor()

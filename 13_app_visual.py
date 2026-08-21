@@ -41,7 +41,7 @@ def conectar_base_datos():
     This bypasses Ubuntu's root auth_socket guard, allowing frictionless 
     TCP/IP internal piping.
     """
-     return mysql.connector.connect(
+    return mysql.connector.connect(
             host=os.getenv("DB_HOST"),
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD"),
