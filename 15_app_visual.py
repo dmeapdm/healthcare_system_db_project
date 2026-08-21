@@ -37,6 +37,8 @@ opcion = st.sidebar.selectbox("Módulos del Sistema:", [
     "📝 Registro de Equipos Nuevos",
     "👨‍🔧 Historial de Reparaciones (Taller)",
     "📝 Nueva Orden de Trabajo" # <-- NUEVA POSTA OPERATIVA DE HOY
+    "📝 Nueva Orden de Trabajo",
+    "📦 Almacén y Control de Stock"
 ])
 
 
@@ -368,107 +370,239 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
     except Exception as e:
         st.error(f"❌ Error al consultar la base de datos de historial: {e}")
 
+
+
 # =========================================================================
-# 📝 MÓDULO 5: DATA ENTRY - APERTURA DE ORDEN POR NÚMERO DE SERIE (UPDATED)
+# 📝 MÓDULO 5: NUEVA ORDEN DE TRABAJO CON AUDITORÍA TRANSACCIONAL DE STOCK
 # =========================================================================
 elif opcion == "📝 Nueva Orden de Trabajo":
-    st.title("📝 Data Entry - Apertura y Cierre de Orden de Trabajo")
-    st.markdown("#### *Buscador indexado por Número de Serie para asignación rápida de intervenciones.*")
+    st.title("📝 Apertura y Cierre de Orden de Trabajo")
+    st.markdown("#### *Registro técnico con asignación y movimientos automatizados de stock.*")
     st.write("---")
     
-    st.subheader("🔍 Identificación Obligatoria del Activo")
+    st.subheader("🔍 Identificación del Activo")
+    serie_orden = st.text_input("🔌 Número de Serie del Equipo:", placeholder="Ej: SN-MIND-9982...").strip()
     
-    # 1. Reemplazamos la lista infinita por un buscador de texto libre por Serie Exacta
-    serie_orden = st.text_input("🔌 Ingresa el Número de Serie de Fábrica del Equipo:", placeholder="Ej: SN-MIND-9982 o el código exacto...").strip()
-    
-    # Inicializamos la variable que contendrá el ID del equipo encontrado
     id_equipment_encontrado = None
-    
+    servicio_equipo = "Desconocido"
     if serie_orden:
         try:
-            # Validamos en tiempo real si la serie existe en la base de datos
             conexion = conectar_base_datos()
             mensajero = conexion.cursor(dictionary=True)
-            query_buscar_serie = "SELECT id_equipment, type_device, brand, model, location FROM equipment WHERE serial_number_factory = %s;"
-            mensajero.execute(query_buscar_serie, (serie_orden,))
-            activo_encontrado = mensajero.fetchone()
+            mensajero.execute("SELECT id_equipment, type_device, brand, model, location FROM equipment WHERE serial_number_factory = %s;", (serie_orden,))
+            activo = mensajero.fetchone()
             mensajero.close()
             conexion.close()
-            
-            if activo_encontrado:
-                id_equipment_encontrado = activo_encontrado['id_equipment']
-                # Le mostramos al técnico una tarjeta estéticamente impecable confirmando el equipo
-                st.success(
-                    f"✅ **Equipo Vinculado Exitosamente:** {activo_encontrado['type_device']} "
-                    f"| Marca: {activo_encontrado['brand']} | Modelo: {activo_encontrado['model']} "
-                    f"| Servicio: {activo_encontrado['location']} (ID QR: {id_equipment_encontrado})"
-                )
-            else:
-                st.error("❌ El Número de Serie ingresado no coincide con ningún activo en el inventario actual. Verifica los dígitos.")
-        except Exception as e:
-            st.error(f"❌ Error al consultar el índice de series: {e}")
+            if activo:
+                id_equipment_encontrado = activo['id_equipment']
+                servicio_equipo = activo['location']
+                st.success(f"✅ **Equipo Vinculado:** {activo['type_device']} | {activo['brand']} {activo['model']} (Servicio: {servicio_equipo} | ID QR: {id_equipment_encontrado})")
+            else: st.error("❌ El Número de Serie no existe en el inventario.")
+        except Exception as e: st.error(f"❌ Error: {e}")
             
     st.write("---")
-    st.subheader("📋 Datos del Reporte Técnico")
+    st.subheader("📋 Datos del Reporte")
+    c_maint, c_tec = st.columns(2)
+    with c_maint: tipo_maint = st.selectbox("⚙️ Tipo:", ["corrective", "preventive"])
+    with c_tec: tecnico_firmante = st.text_input("👤 Técnico Responsable (Tu Nombre):").strip()
+        
+    falla_reportada = st.text_area("🚨 Falla Reportada / Síntomas:")
+    trabajo_realizado = st.text_area("✅ Trabajo Técnico Ejecutado:")
     
-    col_tipo_maint, col_tecnico = st.columns(2)
-    with col_tipo_maint:
-        tipo_maint = st.selectbox("⚙️ Tipo de Intervención:", ["corrective", "preventive"])
-    with col_tecnico:
-        tecnico_firmante = st.text_input("👤 Técnico Responsable de la Reparación (Tu Nombre):").strip()
+    st.write("---")
+    st.subheader("📦 Consumo de Repuestos y Accesorios Clínicos")
+    
+    insumos_seleccionados = []
+    cantidades_insumos = {}
+    mapa_ids_repuestos = {}
+    
+    try:
+        conexion = conectar_base_datos()
+        # Traemos los Grupos y Categorías orgánicas de tu nueva tabla inputs
+        df_tipos_inv = pd.read_sql("SELECT DISTINCT input_type FROM inputs WHERE is_active = TRUE;", conexion)
+        df_cats_inv = pd.read_sql("SELECT DISTINCT input_category FROM inputs WHERE is_active = TRUE;", conexion)
+        conexion.close()
+        
+        c_f1, c_f2 = st.columns(2)
+        with c_f1: filtro_t = st.selectbox("🎯 Filtrar por Tipo de Almacén:", ["-- Todos --"] + list(df_tipos_inv['input_type'].values))
+        with c_f2: filtro_c = st.selectbox("📁 Filtrar por Categoría Clínica:", ["-- Todas --"] + list(df_cats_inv['input_category'].values))
+            
+        query_parts = "SELECT id_inputs, internal_code, brand, model_ref, name_input, stock, unit_of_measure FROM inputs WHERE is_active = TRUE"
+        params_parts = []
+        if filtro_t != "-- Todos --": query_parts += " AND input_type = %s"; params_parts.append(filtro_t)
+        if filtro_c != "-- Todas --": query_parts += " AND input_category = %s"; params_parts.append(filtro_c)
+            
+        conexion = conectar_base_datos()
+        df_parts = pd.read_sql(query_parts, conexion, params=params_parts)
+        conexion.close()
+        
+        opciones_repuestos = []
+        for idx, fila in df_parts.iterrows():
+            label = f"{fila['internal_code']} | {fila['brand']} {fila['model_ref']} | {fila['name_input']} ({fila['stock']} {fila['unit_of_measure']} disp.)"
+            opciones_repuestos.append(label)
+            mapa_ids_repuestos[label] = (fila['id_inputs'], fila['stock'], fila['name_input'])
+            
+        insumos_seleccionados = st.multiselect("🔍 Selecciona las partes utilizadas (puedes elegir varias):", opciones_repuestos)
+        
+        if insumos_seleccionados:
+            st.write("🔢 **Especificar las cantidades utilizadas:**")
+            columnas_cantidades = st.columns(len(insumos_seleccionados))
+            for i, item in enumerate(insumos_seleccionados):
+                with columnas_cantidades[i]:
+                    _, max_disp, nom_ins_c = mapa_ids_repuestos[item]
+                    cantidades_insumos[item] = st.number_input(f"{nom_ins_c[:20]}... :", min_value=1, max_value=max_disp if max_disp > 0 else 1, value=1, key=f"cant_wo_{i}")
+    except Exception as e: st.error(f"❌ Error al mapear almacén: {e}")
         
     st.write("---")
-    st.subheader("⏱️ Cronómetro de Intervención (Cálculo de Tiempo Muerto)")
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        fecha_inicio = st.date_input("📅 Fecha de Inicio del Trabajo:")
-        hora_inicio = st.time_input("⏰ Hora de Inicio:")
-    with col_f2:
-        fecha_fin = st.date_input("📅 Fecha de Finalización:")
-        hora_fin = st.time_input("⏰ Hora de Finalización:")
-        
-    st.write("---")
-    st.subheader("📝 Detalles de Ingeniería Clínica")
-    falla_reportada = st.text_area("🚨 Falla Reportada / Síntomas detectados por el servicio:")
-    trabajo_realizado = st.text_area("✅ Trabajo Técnico Ejecutado y Repuestos Consumidos:")
-    
-    st.write("---")
-    
-    if st.button("🚀 Registrar Orden de Trabajo en el Servidor", use_container_width=True):
-        # Regla de Validación de Negocio: No se puede guardar si no se identificó un equipo válido primero
-        if id_equipment_encontrado is None:
-            st.error("🚫 Operación bloqueada: Debes ingresar un Número de Serie válido y existente para amarrar la orden de trabajo.")
+    if st.button("🚀 Registrar Orden y Generar Movimientos de Stock", use_container_width=True):
+        if id_equipment_encontrado is None: st.error("🚫 Operación bloqueada: Se necesita un Número de Serie válido.")
         elif tecnico_firmante and falla_reportada and trabajo_realizado:
             try:
-                # Combinamos de forma segura la fecha y hora seleccionada en Streamlit
-                datetime_inicio = f"{fecha_inicio} {hora_inicio}"
-                datetime_fin = f"{fecha_fin} {hora_fin}"
-                
                 conexion = conectar_base_datos()
                 mensajero = conexion.cursor()
                 
-                query_insert_order = """
-                INSERT INTO work_order (
-                    id_equipment, date_work_start, date_work_finish, 
-                    type_maintenance, description_fault, description_work_done, technical_responsible
-                ) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s);
-                """
+                # 1. Insertamos la orden de trabajo principal
+                query_insert_order = "INSERT INTO work_order (id_equipment, date_work_start, date_work_finish, type_maintenance, description_fault, description_work_done, technical_responsible) VALUES (%s, NOW(), NOW(), %s, %s, %s, %s);"
+                mensajero.execute(query_insert_order, (id_equipment_encontrado, tipo_maint, falla_reportada, trabajo_realizado, tecnico_firmante))
+                id_wo = mensajero.lastrowid
                 
-                datos_orden = (
-                    id_equipment_encontrado, datetime_inicio, datetime_fin, 
-                    tipo_maint, falla_reportada, trabajo_realizado, tecnico_firmante
-                )
-                
-                mensajero.execute(query_insert_order, datos_orden)
+                # 2. Bucle transaccional: Actualiza stock e inserta en tu nueva tabla de movimientos
+                for item in insumos_seleccionados:
+                    id_insumo, _, _ = mapa_ids_repuestos[item]
+                    cantidad_usada = cantidades_insumos[item]
+                    
+                    # Enlace clásico N a N
+                    mensajero.execute("INSERT INTO work_order_inputs (id_work_order, id_inputs, quantity_used) VALUES (%s, %s, %s);", (id_wo, id_insumo, cantidad_usada))
+                    # Descuento físico en inputs
+                    mensajero.execute("UPDATE inputs SET stock = stock - %s WHERE id_inputs = %s;", (cantidad_usada, id_insumo))
+                    
+                    # 💡 NUEVO: Tu auditoría transaccional en stock_movements
+                    query_mov = """
+                    INSERT INTO stock_movements (id_inputs, id_work_order, movement_type, quantity, destination_service, requested_by, dispatched_by, notes) 
+                    VALUES (%s, %s, 'salida_orden', %s, %s, %s, %s, %s);
+                    """
+                    notas_mov = f"Consumido de forma automática en reparación bajo Orden de Trabajo N° {id_wo}."
+                    mensajero.execute(query_mov, (id_insumo, id_wo, cantidad_usada, servicio_equipo, tecnico_firmante, tecnico_firmante, notas_mov))
+                    
                 conexion.commit()
                 mensajero.close()
                 conexion.close()
-                
-                st.success(f"🎉 ¡Orden de trabajo registrada con éxito! El sistema vinculó el ID {id_equipment_encontrado} y calculó el tiempo muerto.")
+                st.success(f"🎉 ¡Orden N° {id_wo} guardada! Movimientos de stock auditados en tu nueva tabla relacional.")
                 st.balloons()
+            except Exception as e: st.error(f"❌ Error transaccional MySQL: {e}")
+        else: st.warning("⚠️ Completa los campos obligatorios.")
+
+# =========================================================================
+# 📦 MÓDULO 6: ALMACÉN CON DESCUENTO DIRECTO Y BITÁCORA DE MOVIMIENTOS
+# =========================================================================
+elif opcion == "📦 Almacén y Control de Stock":
+    st.title("📦 Almacén Unificado de Electromedicina")
+    st.write("---")
+    
+    pestana_ver, pestana_egreso, pestana_kardex = st.tabs(["📋 Ver Stock Actual", "📉 Salida Directa (Sin Orden)", "📜 Bitácora de Movimientos (Kardex)"])
+    
+    with pestana_ver:
+        st.subheader("📋 Estado Organizado del Almacén")
+        try:
+            conexion = conectar_base_datos()
+            query_master_stock = """
+            SELECT 
+                i.id_inputs AS 'ID', i.internal_code AS 'Código', i.input_type AS 'Grupo', 
+                i.input_category AS 'Categoría', i.brand AS 'Marca', i.model_ref AS 'Modelo/REF', 
+                i.name_input AS 'Descripción', i.stock AS 'Cant.', i.unit_of_measure AS 'Unidad', 
+                i.min_stock_alert AS 'Mínimo', i.unit_price AS 'Precio U.', s.name_supplier AS 'Proveedor'
+            FROM inputs i
+            LEFT JOIN supplier s ON i.id_supplier = s.id_supplier
+            WHERE i.is_active = TRUE;
+            """
+            df_stock = pd.read_sql(query_master_stock, conexion)
+            conexion.close()
+            st.dataframe(df_stock, use_container_width=True)
+            
+            criticos = df_stock[df_stock['Cant.'] <= df_stock['Mínimo']]
+            if not criticos.empty:
+                st.error(f"🚨 **Alerta Crítica de Almacén:** ¡Hay {len(criticos)} artículos en nivel de reposición obligatoria!")
+                st.write(criticos[['Código', 'Descripción', 'Cant.']])
+        except Exception as e: st.error(f"❌ Error: {e}")
+            
+    with pestana_egreso:
+        st.subheader("📉 Egreso Directo de Almacén (Para UCI / Guardia / Emergencias)")
+        st.caption("Usa esta pestaña para despachar un insumo médico de inmediato sin asociarlo a ninguna orden de trabajo.")
+        
+        try:
+            conexion = conectar_base_datos()
+            df_eg_combo = pd.read_sql("SELECT id_inputs, internal_code, name_input, stock, unit_of_measure FROM inputs WHERE is_active = TRUE;", conexion)
+            conexion.close()
+            
+            lista_egresos = []
+            mapa_egresos = {}
+            for idx, fila in df_eg_combo.iterrows():
+                lbl = f"{fila['internal_code']} | {fila['name_input']} ({fila['stock']} {fila['unit_of_measure']} disp.)"
+                lista_egresos.append(lbl)
+                mapa_egresos[lbl] = (fila['id_inputs'], fila['stock'], fila['name_input'])
                 
-            except Exception as e:
-                st.error(f"❌ Error al intentar impactar la orden en MySQL: {e}")
-        else:
-            st.warning("⚠️ La Falla Reportada, Tarea Ejecutada y el Nombre del Técnico son campos obligatorios para el reporte legal.")
+            item_egreso = st.selectbox("📦 Selecciona el insumo clínico a despachar:", lista_egresos)
+
+            c_eg1, c_eg2 = st.columns(2)
+            with c_eg1: 
+                cant_egreso = st.number_input("🔢 Cantidad a Retirar:", min_value=1, step=1)
+            with c_eg2: 
+                servicio_destino = st.selectbox("📍 Servicio Destino:", ["UCI", "Neonatología", "Guardia", "Quirófano", "Piso Internación"])
+
+            c_eg3, c_eg4 = st.columns(2)
+            with c_eg3: 
+                solicita = st.text_input("👤 Solicitado por (Ej. Enfermera Jefa):").strip()
+            with c_eg4: 
+                entrega = st.text_input("👤 Entregado por (Técnico de Electromedicina):").strip()
+            notas_egreso = st.text_input("📝 Notas o Justificación:", placeholder="Ej: Reposición de emergencia por rotura de sensor anterior...")
+            if st.button("📉 Confirmar Despacho Directo e Impactar Auditoría", use_container_width=True):
+                id_ins, st_disp, nom_ins = mapa_egresos[item_egreso]
+                if solicita and entrega:
+                    if st_disp >= cant_egreso:
+                        conexion = conectar_base_datos()
+                        mensajero = conexion.cursor()
+                        # 1. Descontamos el stock de la tabla maestra
+                        mensajero.execute("UPDATE inputs SET stock = stock - %s WHERE id_inputs = %s;", (cant_egreso, id_ins))
+                        # 2. 💡 NUEVO: Registramos la auditoría transparente en stock_movements con id_work_order = NULL
+                        query_mov_directo = """INSERT INTO stock_movements (id_inputs, id_work_order, movement_type, quantity, destination_service, requested_by, dispatched_by, notes)VALUES (%s, NULL, 'salida_directa', %s, %s, %s, %s, %s);"""
+                        mensajero.execute(query_mov_directo, (id_ins, cant_egreso, servicio_destino, solicita, entrega, notas_egreso))
+                        conexion.commit()
+                        mensajero.close()
+                        conexion.close()
+                        st.success(f"✅ ¡Despacho exitoso! Se descontaron {cant_egreso} unidades de '{nom_ins}' destinadas a {servicio_destino}.")
+                        st.balloons()
+                    else:
+                        st.error("🚫 Error: Cantidad insuficiente en stock.")
+                else:
+                    st.warning("⚠️ Los campos de personal (quién solicita y quién entrega) son obligatorios.")
+        except Exception as e:
+                st.error(f"❌ Error operativo: {e}")
+# -------------------------------------------------------------------------# 
+# 📜 PESTAÑA 3: LA BITÁCORA KARDEX EN VIVO (MUESTRA TU NUEVA TABLA)#
+# -------------------------------------------------------------------------
+    with pestana_kardex:
+        st.subheader("📜 Libro de Actas e Historial Logístico (Kardex)")
+        st.caption("Bitácora inmutable de auditoría. Cada movimiento de stock, compra o ajuste se registra aquí cronológicamente.")
+        try:
+            conexion = conectar_base_datos()
+            query_kardex = """
+            SELECT
+                sm.id_movement AS 'N° Ref',
+                i.internal_code AS 'Código Insumo',
+                i.name_input AS 'Descripción',
+                sm.movement_type AS 'Tipo Movimiento',
+                sm.quantity AS 'Cantidad',
+                sm.destination_service AS 'Destino/Servicio',
+                sm.requested_by AS 'Solicitante',
+                sm.dispatched_by AS 'Despachante',
+                sm.movement_date AS 'Fecha/Hora',
+                sm.notes AS 'Observaciones'
+            FROM stock_movements sm
+            JOIN inputs i ON sm.id_inputs = i.id_inputs
+            ORDER BY sm.movement_date DESC;
+            """
+            df_kardex = pd.read_sql(query_kardex, conexion)
+            conexion.close()
+            st.dataframe(df_kardex, use_container_width=True)
+        except Exception as e:
+            st.error(f"❌ Error al leer la bitácora: {e}")
