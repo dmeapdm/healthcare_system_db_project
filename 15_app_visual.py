@@ -15,6 +15,8 @@ import streamlit as st
 import mysql.connector
 import pandas as pd
 import os
+import json
+import bcrypt
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -29,8 +31,101 @@ def conectar_base_datos():
     )
 
 
+# =========================================================================
+# 🔐 AUTENTICACIÓN Y AUDITORÍA (Fase 2/3 - RBAC)
+# =========================================================================
+def verificar_login(username, password):
+    """Verifica usuario/contraseña contra la tabla `users` usando bcrypt.
+    Devuelve el registro del usuario (dict) si es válido y está activo, o None."""
+    try:
+        conexion = conectar_base_datos()
+        cursor = conexion.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT u.id_user, u.username, u.password_hash, u.full_name, u.is_active,
+                   r.role_name, u.hospital_id, h.name_hospital
+            FROM users u
+            JOIN roles r ON u.role_id = r.id_role
+            JOIN hospitals h ON u.hospital_id = h.id_hospital
+            WHERE u.username = %s;
+            """,
+            (username,)
+        )
+        usuario = cursor.fetchone()
+        cursor.close()
+        conexion.close()
+    except Exception:
+        return None
+
+    if usuario is None or not usuario["is_active"]:
+        return None
+
+    if bcrypt.checkpw(password.encode("utf-8"), usuario["password_hash"].encode("utf-8")):
+        return usuario
+    return None
+
+
+def registrar_auditoria(id_user, action_type, entity_affected, entity_id, detalles: dict):
+    """Inserta un registro inmutable en audit_logs. Nunca debe frenar el flujo
+    principal de la app: si falla, se muestra un aviso pero no se revierte la
+    operación de negocio que ya se confirmó."""
+    try:
+        conexion = conectar_base_datos()
+        cursor = conexion.cursor()
+        cursor.execute(
+            """
+            INSERT INTO audit_logs (user_id, action_type, entity_affected, entity_id, details_json)
+            VALUES (%s, %s, %s, %s, %s);
+            """,
+            (id_user, action_type, entity_affected, entity_id, json.dumps(detalles, default=str))
+        )
+        conexion.commit()
+        cursor.close()
+        conexion.close()
+    except Exception as e:
+        st.warning(f"⚠️ La operación se guardó, pero no se pudo registrar en auditoría: {e}")
+
+
+# =========================================================================
+# 🔒 CONTROL DE SESIÓN / PANTALLA DE LOGIN
+# =========================================================================
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None
+
+if st.session_state.usuario_actual is None:
+    st.title("🏥 Gestión Biomédica - Acceso al Sistema")
+    st.write("---")
+    with st.form("login_form"):
+        username_input = st.text_input("👤 Usuario:")
+        password_input = st.text_input("🔑 Contraseña:", type="password")
+        submit_login = st.form_submit_button("Ingresar", use_container_width=True)
+
+    if submit_login:
+        usuario_validado = verificar_login(username_input.strip(), password_input)
+        if usuario_validado:
+            st.session_state.usuario_actual = usuario_validado
+            registrar_auditoria(
+                usuario_validado["id_user"], "LOGIN", "users", usuario_validado["id_user"],
+                {"username": usuario_validado["username"]}
+            )
+            st.rerun()
+        else:
+            st.error("❌ Usuario o contraseña incorrectos, o el usuario está inactivo.")
+    st.stop()  # Nada del resto de la app se ejecuta sin sesión válida
+
+# Atajos usados en todos los módulos de abajo
+USUARIO_ACTUAL = st.session_state.usuario_actual
+ID_USER_ACTUAL = USUARIO_ACTUAL["id_user"]
+HOSPITAL_ID_ACTUAL = USUARIO_ACTUAL["hospital_id"]
+
+
 # --- MENÚ LATERAL DE ROUTING (Añadimos tu nuevo Paso 2 de forma independiente) ---
 st.sidebar.markdown("## 🏥 Gestión Biomédica (R&D Log)")
+st.sidebar.success(f"👤 **{USUARIO_ACTUAL['full_name']}**\n\n🎖️ {USUARIO_ACTUAL['role_name']} | 🏥 {USUARIO_ACTUAL['name_hospital']}")
+if st.sidebar.button("🚪 Cerrar sesión"):
+    registrar_auditoria(ID_USER_ACTUAL, "LOGOUT", "users", ID_USER_ACTUAL, {"username": USUARIO_ACTUAL["username"]})
+    st.session_state.usuario_actual = None
+    st.rerun()
 st.sidebar.write("---")
 opcion = st.sidebar.selectbox("Módulos del Sistema:", [
     "📊 Inventario (Estándar OMS)",
@@ -66,9 +161,10 @@ if opcion == "📊 Inventario (Estándar OMS)":
             location AS 'Servicio',
             id_supplier AS 'ID Proveedor',
             date_inventory_updated AS 'Última Actualización'
-        FROM equipment;
+        FROM equipment
+        WHERE hospital_id = %s;
         """
-        df = pd.read_sql(query_oms, conexion)
+        df = pd.read_sql(query_oms, conexion, params=(HOSPITAL_ID_ACTUAL,))
         conexion.close()
         st.dataframe(df, use_container_width=True)
     except Exception as e:
@@ -195,17 +291,23 @@ elif opcion == "📝 Registro de Equipos Nuevos":
                 # Plantilla SQL actualizada con el nuevo campo de energía de la OMS
                 query_insertar = """
                 INSERT INTO equipment (
-                    serial_number_factory, type_device, category, brand, model, 
+                    hospital_id, serial_number_factory, type_device, category, brand, model, 
                     year_manufactured, state, location, id_supplier, power_requirements
                 ) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """
-                datos_equipo = (serie, tipo, categoria, marca, modelo, int(anio), 'OK', ubicacion, id_final_proveedor, energia)
+                datos_equipo = (HOSPITAL_ID_ACTUAL, serie, tipo, categoria, marca, modelo, int(anio), 'OK', ubicacion, id_final_proveedor, energia)
                 
                 mensajero.execute(query_insertar, datos_equipo)
+                id_equipo_nuevo = mensajero.lastrowid
                 conexion.commit()
                 mensajero.close()
                 conexion.close()
+                
+                registrar_auditoria(
+                    ID_USER_ACTUAL, "CREATE", "equipment", id_equipo_nuevo,
+                    {"serial_number_factory": serie, "type_device": tipo, "brand": marca, "model": modelo}
+                )
                 
                 st.success(f"🎉 ¡Equipo registrado exitosamente!")
                 st.balloons()
@@ -251,8 +353,8 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
         # CONSTRUCCIÓN DE LA QUERY DINÁMICA CON PATRÓN 'LIKE'
         # =========================================================================
         # Iniciamos la consulta base que traerá los equipos que coincidan con los filtros
-        query_busqueda = "SELECT id_equipment, type_device, brand, model, serial_number_factory, location FROM equipment WHERE 1=1"
-        parametros = []
+        query_busqueda = "SELECT id_equipment, type_device, brand, model, serial_number_factory, location FROM equipment WHERE hospital_id = %s"
+        parametros = [HOSPITAL_ID_ACTUAL]
         
         # Si el usuario escribió algo en la barra de búsqueda, aplicamos el operador LIKE de MySQL
         if busqueda_texto:
@@ -306,8 +408,9 @@ elif opcion == "👨‍🔧 Historial de Reparaciones (Taller)":
                     TIMESTAMPDIFF(MINUTE, w.date_work_start, w.date_work_finish) AS 'Minutos_Totales',
                     w.description_fault AS 'Falla Reportada',
                     w.description_work_done AS 'Tarea Ejecutada',
-                    w.technical_responsible AS 'Técnico'
+                    COALESCE(u.full_name, w.technical_responsible_legacy, 'Sin registrar') AS 'Técnico'
                 FROM work_order w
+                LEFT JOIN users u ON w.id_user_responsible = u.id_user
                 WHERE w.id_equipment = %s
                 ORDER BY w.date_work_start DESC;
                 """
@@ -388,7 +491,10 @@ elif opcion == "📝 Nueva Orden de Trabajo":
         try:
             conexion = conectar_base_datos()
             mensajero = conexion.cursor(dictionary=True)
-            mensajero.execute("SELECT id_equipment, type_device, brand, model, location FROM equipment WHERE serial_number_factory = %s;", (serie_orden,))
+            mensajero.execute(
+                "SELECT id_equipment, type_device, brand, model, location FROM equipment WHERE serial_number_factory = %s AND hospital_id = %s;",
+                (serie_orden, HOSPITAL_ID_ACTUAL)
+            )
             activo = mensajero.fetchone()
             mensajero.close()
             conexion.close()
@@ -403,7 +509,9 @@ elif opcion == "📝 Nueva Orden de Trabajo":
     st.subheader("📋 Datos del Reporte")
     c_maint, c_tec = st.columns(2)
     with c_maint: tipo_maint = st.selectbox("⚙️ Tipo:", ["corrective", "preventive"])
-    with c_tec: tecnico_firmante = st.text_input("👤 Técnico Responsable (Tu Nombre):").strip()
+    with c_tec:
+        st.text_input("👤 Técnico Responsable:", value=USUARIO_ACTUAL["full_name"], disabled=True)
+        st.caption("Se toma automáticamente de tu sesión iniciada.")
         
     falla_reportada = st.text_area("🚨 Falla Reportada / Síntomas:")
     trabajo_realizado = st.text_area("✅ Trabajo Técnico Ejecutado:")
@@ -478,30 +586,52 @@ elif opcion == "📝 Nueva Orden de Trabajo":
         elif datetime_fin < datetime_inicio:
             st.error("🚫 La fecha/hora de finalización no puede ser anterior a la de inicio. Revisá el cronómetro.")
         #elif not id_insumos_finales: st.error("🚫 Operación bloqueada: Debes adherir al menos un repuesto por código.")
-        elif tecnico_firmante and falla_reportada and trabajo_realizado:
+        elif falla_reportada and trabajo_realizado:
             try:
                 conexion = conectar_base_datos()
                 mensajero = conexion.cursor()
                 
-                query_insert_order = "INSERT INTO work_order (id_equipment, date_work_start, date_work_finish, type_maintenance, description_fault, description_work_done, technical_responsible) VALUES (%s, %s, %s, %s, %s, %s, %s);"
-                mensajero.execute(query_insert_order, (id_equipment_encontrado, datetime_inicio, datetime_fin, tipo_maint, falla_reportada, trabajo_realizado, tecnico_firmante))
+                query_insert_order = """
+                INSERT INTO work_order (hospital_id, id_equipment, date_work_start, date_work_finish,
+                                         type_maintenance, description_fault, description_work_done, id_user_responsible)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                """
+                mensajero.execute(query_insert_order, (
+                    HOSPITAL_ID_ACTUAL, id_equipment_encontrado, datetime_inicio, datetime_fin,
+                    tipo_maint, falla_reportada, trabajo_realizado, ID_USER_ACTUAL
+                ))
                 id_wo = mensajero.lastrowid
                 
                 # Bucle transaccional sobre tus repuestos adheridos
+                insumos_consumidos_log = []
                 for id_ins, cant_usada in id_insumos_finales.items():
                     mensajero.execute("INSERT INTO work_order_inputs (id_work_order, id_inputs, quantity_used) VALUES (%s, %s, %s);", (id_wo, id_ins, cant_usada))
                     mensajero.execute("UPDATE inputs SET stock = stock - %s WHERE id_inputs = %s;", (cant_usada, id_ins))
                     
                     query_mov = """
-                    INSERT INTO stock_movements (id_inputs, id_work_order, movement_type, quantity, destination_service, requested_by, dispatched_by, notes) 
-                    VALUES (%s, %s, 'salida_orden', %s, %s, %s, %s, %s);
+                    INSERT INTO stock_movements (hospital_id, id_inputs, id_work_order, movement_type, quantity,
+                                                  destination_service, id_user_requested, id_user_dispatched, notes) 
+                    VALUES (%s, %s, %s, 'salida_orden', %s, %s, %s, %s, %s);
                     """
                     notas_mov = f"Consumido de forma automática en reparación bajo Orden de Trabajo N° {id_wo}."
-                    mensajero.execute(query_mov, (id_ins, id_wo, cant_usada, servicio_equipo, tecnico_firmante, tecnico_firmante, notas_mov))
+                    mensajero.execute(query_mov, (
+                        HOSPITAL_ID_ACTUAL, id_ins, id_wo, cant_usada, servicio_equipo,
+                        ID_USER_ACTUAL, ID_USER_ACTUAL, notas_mov
+                    ))
+                    insumos_consumidos_log.append({"id_inputs": id_ins, "cantidad": cant_usada})
                     
                 conexion.commit()
                 mensajero.close()
                 conexion.close()
+                
+                registrar_auditoria(
+                    ID_USER_ACTUAL, "WORK_ORDER_CLOSE", "work_order", id_wo,
+                    {
+                        "id_equipment": id_equipment_encontrado, "type_maintenance": tipo_maint,
+                        "description_fault": falla_reportada, "description_work_done": trabajo_realizado,
+                        "insumos_consumidos": insumos_consumidos_log
+                    }
+                )
                 
                 st.session_state.lista_codigos_wo = [] # Limpiamos la lista para la próxima orden
                 st.success(f"🎉 ¡Orden N° {id_wo} guardada exitosamente con descuento transaccional!")
@@ -518,7 +648,7 @@ elif opcion == "📦 Almacén y Control de Stock":
     st.title("📦 Almacén Unificado de Electromedicina")
     st.write("---")
     
-    pestana_ver, pestana_egreso, pestana_kardex = st.tabs(["📋 Ver y Buscar Ubicación", "📉 Salida Directa (Por Código)", "📜 Bitácora de Movimientos (Kardex)"])
+    pestana_ver, pestana_ingreso, pestana_egreso, pestana_kardex = st.tabs(["📋 Ver y Buscar Ubicación", "📈 Ingreso / Entrada de Stock", "📉 Salida Directa (Por Código)", "📜 Bitácora de Movimientos (Kardex)"])
     
     # -------------------------------------------------------------------------
     # PESTAÑA 1: TU REQUERIMIENTO - LOCALIZADOR RÁPIDO DE ESTANTES Y CAJONES
@@ -536,13 +666,16 @@ elif opcion == "📦 Almacén y Control de Stock":
                 i.name_input AS 'Descripción', i.cabinet_space AS 'Mueble/Estante', i.drawer_location AS 'Cajón/Ubicación',
                 i.stock AS 'Cant.', i.unit_of_measure AS 'Unidad', i.min_stock_alert AS 'Mínimo'
             FROM inputs i
-            WHERE i.is_active = TRUE
+            WHERE i.is_active = TRUE AND i.hospital_id = %s
             """
+            parametros_stock = [HOSPITAL_ID_ACTUAL]
             if txt_buscar_almacen:
-                query_master_stock += f" AND (i.name_input LIKE '%{txt_buscar_almacen}%' OR i.brand LIKE '%{txt_buscar_almacen}%' OR i.internal_code LIKE '%{txt_buscar_almacen}%')"
+                query_master_stock += " AND (i.name_input LIKE %s OR i.brand LIKE %s OR i.internal_code LIKE %s)"
+                termino_stock = f"%{txt_buscar_almacen}%"
+                parametros_stock.extend([termino_stock, termino_stock, termino_stock])
                 
             query_master_stock += " ORDER BY i.internal_code ASC;"
-            df_stock = pd.read_sql(query_master_stock, conexion)
+            df_stock = pd.read_sql(query_master_stock, conexion, params=tuple(parametros_stock))
             conexion.close()
             
             # Si el usuario buscó algo específico, le dibujamos tarjetas estéticas en pantalla
@@ -566,7 +699,75 @@ elif opcion == "📦 Almacén y Control de Stock":
         except Exception as e: st.error(f"❌ Error: {e}")
             
     # -------------------------------------------------------------------------
-    # PESTAÑA 2: EGRESO RÁPIDO DIGITAL POR CÓDIGO (SIN SCROLL INFINITO)
+    # PESTAÑA 2: INGRESO / ENTRADA DE STOCK (COMPRAS, REPOSICIÓN DE PROVEEDOR)
+    # -------------------------------------------------------------------------
+    with pestana_ingreso:
+        st.subheader("📈 Ingreso de Stock (Compra / Recepción de Mercadería)")
+        st.caption("Registra la recepción de unidades nuevas en almacén. Suma directamente al stock disponible.")
+        
+        try:
+            conexion_in = conectar_base_datos()
+            df_insumos_in = pd.read_sql(
+                "SELECT id_inputs, internal_code, name_input, stock, unit_of_measure FROM inputs WHERE is_active = TRUE AND hospital_id = %s ORDER BY internal_code ASC;",
+                conexion_in, params=(HOSPITAL_ID_ACTUAL,)
+            )
+            conexion_in.close()
+        except Exception as e:
+            df_insumos_in = pd.DataFrame(columns=["id_inputs", "internal_code", "name_input", "stock", "unit_of_measure"])
+            st.error(f"❌ No se pudo cargar el listado de insumos: {e}")
+        
+        mapa_insumos_in = {"-- Selecciona un artículo --": None}
+        for _, fila_in in df_insumos_in.iterrows():
+            etiqueta = f"{fila_in['internal_code']} - {fila_in['name_input']} (Stock actual: {fila_in['stock']} {fila_in['unit_of_measure']})"
+            mapa_insumos_in[etiqueta] = fila_in['id_inputs']
+        
+        articulo_seleccionado_in = st.selectbox("📦 Artículo Recibido:", list(mapa_insumos_in.keys()))
+        id_insumo_final_in = mapa_insumos_in[articulo_seleccionado_in]
+        
+        c_in1, c_in2 = st.columns(2)
+        with c_in1: cant_ingreso = st.number_input("🔢 Cantidad Recibida:", min_value=1, step=1)
+        with c_in2: st.text_input("👤 Recibido por:", value=USUARIO_ACTUAL["full_name"], disabled=True)
+        
+        notas_ingreso = st.text_input("📝 Observaciones (ej. N° de factura/remito, proveedor):")
+        
+        if st.button("📈 Confirmar Ingreso a Almacén", use_container_width=True):
+            if id_insumo_final_in is None:
+                st.warning("⚠️ Debes seleccionar un artículo válido antes de confirmar el ingreso.")
+            else:
+                conexion_in = conectar_base_datos()
+                mensajero_in = conexion_in.cursor()
+                mensajero_in.execute("UPDATE inputs SET stock = stock + %s WHERE id_inputs = %s;", (cant_ingreso, id_insumo_final_in))
+                
+                # NOTA: movement_type usa 'ingreso_compra', el valor ya soportado por el
+                # CHECK constraint de stock_movements (script 05). 'INGRESO' tal cual no es
+                # un valor válido para esa columna; si se necesita ese literal exacto,
+                # requiere una migración adicional del CHECK constraint.
+                # id_user_requested queda NULL: un ingreso no tiene "solicitante" clínico,
+                # solo un responsable de recepción (id_user_dispatched = usuario logueado).
+                query_mov_ingreso = """
+                INSERT INTO stock_movements (hospital_id, id_inputs, id_work_order, movement_type, quantity,
+                                              destination_service, id_user_requested, id_user_dispatched, notes)
+                VALUES (%s, %s, NULL, 'ingreso_compra', %s, NULL, NULL, %s, %s);
+                """
+                mensajero_in.execute(query_mov_ingreso, (
+                    HOSPITAL_ID_ACTUAL, id_insumo_final_in, cant_ingreso, ID_USER_ACTUAL, notas_ingreso
+                ))
+                id_mov_ingreso = mensajero_in.lastrowid
+                conexion_in.commit()
+                mensajero_in.close()
+                conexion_in.close()
+                
+                registrar_auditoria(
+                    ID_USER_ACTUAL, "STOCK_IN", "stock_movements", id_mov_ingreso,
+                    {"id_inputs": id_insumo_final_in, "quantity": cant_ingreso, "notes": notas_ingreso}
+                )
+                
+                st.success("✅ Ingreso registrado y stock actualizado correctamente.")
+                st.balloons()
+                st.rerun()
+
+    # -------------------------------------------------------------------------
+    # PESTAÑA 3: EGRESO RÁPIDO DIGITAL POR CÓDIGO (SIN SCROLL INFINITO)
     # -------------------------------------------------------------------------
     with pestana_egreso:
         st.subheader("📉 Egreso Directo de Almacén (UCI / Guardia / Emergencias)")
@@ -578,7 +779,10 @@ elif opcion == "📦 Almacén y Control de Stock":
             try:
                 conexion = conectar_base_datos()
                 cursor_eg = conexion.cursor(dictionary=True)
-                cursor_eg.execute("SELECT id_inputs, name_input, stock, unit_of_measure FROM inputs WHERE internal_code = %s AND is_active = TRUE;", (codigo_eg_directo,))
+                cursor_eg.execute(
+                    "SELECT id_inputs, name_input, stock, unit_of_measure FROM inputs WHERE internal_code = %s AND is_active = TRUE AND hospital_id = %s;",
+                    (codigo_eg_directo, HOSPITAL_ID_ACTUAL)
+                )
                 item_eg = cursor_eg.fetchone()
                 cursor_eg.close()
                 conexion.close()
@@ -590,36 +794,76 @@ elif opcion == "📦 Almacén y Control de Stock":
                     with c_eg1: cant_egreso = st.number_input("🔢 Cantidad a Retirar:", min_value=1, max_value=item_eg['stock'] if item_eg['stock'] > 0 else 1, step=1)
                     with c_eg2: servicio_destino = st.selectbox("📍 Servicio Destino:", ["UCI", "Neonatología", "Guardia", "Quirófano", "Piso Internación"])
                     
-                    c_eg3, c_eg4 = st.columns(2)
-                    with c_eg3: solicita = st.text_input("👤 Solicitado por:").strip()
-                    with c_eg4: entrega = st.text_input("👤 Entregado por (Tú):").strip()
+                    # --- Motivo de Reposición: obligatorio, cargado dinámicamente desde reposition_reasons ---
+                    try:
+                        conexion_mot = conectar_base_datos()
+                        df_motivos = pd.read_sql(
+                            "SELECT id_reason, reason_name FROM reposition_reasons WHERE is_active = TRUE ORDER BY reason_name ASC;",
+                            conexion_mot
+                        )
+                        conexion_mot.close()
+                    except Exception as e:
+                        df_motivos = pd.DataFrame(columns=["id_reason", "reason_name"])
+                        st.error(f"❌ No se pudo cargar el catálogo de motivos: {e}")
                     
-                    notas_egreso = st.text_input("📝 Observaciones:")
+                    mapa_motivos = {"-- Selecciona un motivo --": None}
+                    for _, fila_mot in df_motivos.iterrows():
+                        mapa_motivos[fila_mot['reason_name']] = int(fila_mot['id_reason'])
+                    
+                    motivo_seleccionado = st.selectbox("📋 Motivo de Reposición (obligatorio):", list(mapa_motivos.keys()))
+                    id_motivo_final = mapa_motivos[motivo_seleccionado]
+                    
+                    c_eg3, c_eg4 = st.columns(2)
+                    with c_eg3: solicita = st.text_input("👤 Solicitado por (personal clínico):").strip()
+                    with c_eg4: st.text_input("👤 Entregado por:", value=USUARIO_ACTUAL["full_name"], disabled=True)
+                    
+                    notas_egreso = st.text_input("📝 Observaciones (opcional):")
                     
                     if st.button("📉 Confirmar Despacho Directo", use_container_width=True):
-                        if solicita and entrega:
+                        if id_motivo_final is None:
+                            st.warning("⚠️ Debes seleccionar un Motivo de Reposición válido antes de confirmar el despacho.")
+                        elif solicita:
                             conexion = conectar_base_datos()
                             mensajero = conexion.cursor()
                             mensajero.execute("UPDATE inputs SET stock = stock - %s WHERE id_inputs = %s;", (cant_egreso, item_eg['id_inputs']))
                             
+                            # id_user_requested queda NULL a propósito: quien solicita suele ser
+                            # personal clínico (UCI, Guardia) sin cuenta en el sistema. Su nombre
+                            # se guarda en requested_by_legacy como texto libre. id_user_dispatched
+                            # sí es una FK real porque siempre corresponde al usuario logueado.
                             query_mov_directo = """
-                            INSERT INTO stock_movements (id_inputs, id_work_order, movement_type, quantity, destination_service, requested_by, dispatched_by, notes)
-                            VALUES (%s, NULL, 'salida_directa', %s, %s, %s, %s, %s);
+                            INSERT INTO stock_movements (hospital_id, id_inputs, id_work_order, movement_type, id_reason,
+                                                          quantity, destination_service, requested_by_legacy, id_user_dispatched, notes)
+                            VALUES (%s, %s, NULL, 'salida_directa', %s, %s, %s, %s, %s, %s);
                             """
-                            mensajero.execute(query_mov_directo, (item_eg['id_inputs'], cant_egreso, servicio_destino, solicita, entrega, notas_egreso))
+                            mensajero.execute(query_mov_directo, (
+                                HOSPITAL_ID_ACTUAL, item_eg['id_inputs'], id_motivo_final, cant_egreso,
+                                servicio_destino, solicita, ID_USER_ACTUAL, notas_egreso
+                            ))
+                            id_mov_directo = mensajero.lastrowid
                             conexion.commit()
                             mensajero.close()
                             conexion.close()
+                            
+                            registrar_auditoria(
+                                ID_USER_ACTUAL, "STOCK_OUT", "stock_movements", id_mov_directo,
+                                {
+                                    "id_inputs": item_eg['id_inputs'], "quantity": cant_egreso,
+                                    "destination_service": servicio_destino, "id_reason": id_motivo_final,
+                                    "requested_by": solicita
+                                }
+                            )
+                            
                             st.success(f"✅ Despacho exitoso y auditado en la bitácora Kardex.")
                             st.balloons()
                             st.rerun()
-                        else: st.warning("⚠️ Los campos de personal son obligatorios.")
+                        else: st.warning("⚠️ El campo 'Solicitado por' es obligatorio.")
                 else:
                     st.error("❌ El código ingresado no coincide con ningún artículo en stock.")
             except Exception as e: st.error(f"❌ Error: {e}")
 
     # -------------------------------------------------------------------------
-    # PESTAÑA 3: LA BITÁCORA KARDEX EN VIVO
+    # PESTAÑA 4: LA BITÁCORA KARDEX EN VIVO
     # -------------------------------------------------------------------------
     with pestana_kardex:
         st.subheader("📜 Libro de Actas e Historial Logístico (Kardex)")
@@ -629,12 +873,17 @@ elif opcion == "📦 Almacén y Control de Stock":
             SELECT 
                 sm.id_movement AS 'N° Ref', i.internal_code AS 'Código Insumo', i.name_input AS 'Descripción',
                 sm.movement_type AS 'Tipo Movimiento', sm.quantity AS 'Cantidad', sm.destination_service AS 'Destino/Servicio',
-                sm.requested_by AS 'Solicitante', sm.dispatched_by AS 'Despachante', sm.movement_date AS 'Fecha/Hora', sm.notes AS 'Observaciones'
+                COALESCE(u_req.full_name, sm.requested_by_legacy, '—') AS 'Solicitante',
+                COALESCE(u_disp.full_name, sm.dispatched_by_legacy, '—') AS 'Despachante',
+                sm.movement_date AS 'Fecha/Hora', sm.notes AS 'Observaciones'
             FROM stock_movements sm
             JOIN inputs i ON sm.id_inputs = i.id_inputs
+            LEFT JOIN users u_req ON sm.id_user_requested = u_req.id_user
+            LEFT JOIN users u_disp ON sm.id_user_dispatched = u_disp.id_user
+            WHERE sm.hospital_id = %s
             ORDER BY sm.movement_date DESC;
             """
-            df_kardex = pd.read_sql(query_kardex, conexion)
+            df_kardex = pd.read_sql(query_kardex, conexion, params=(HOSPITAL_ID_ACTUAL,))
             conexion.close()
             st.dataframe(df_kardex, use_container_width=True)
         except Exception as e: st.error(f"❌ Error al leer la bitácora: {e}")
