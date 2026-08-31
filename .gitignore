@@ -1,2 +1,16 @@
+# Entornos virtuales y temporales
 env/
+__pycache__/
+
+# Configuración con credenciales y claves
 .env
+
+# Archivos comprimidos y pesados
+*.zip
+
+# Datos locales o scripts temporales
+ELOMED/
+16_import_elomed_data.py
+
+# Archivos SQL con datos sensibles o volcados de base de datos
+*.sql
