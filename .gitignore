@@ -4,7 +4,41 @@ __pycache__/
 
 # Configuración con credenciales y claves
 .env
+# --- Entornos virtuales y temporales ---
+env/
+venv/
+__pycache__/
+*.pyc
 
+# --- Configuración con credenciales y claves ---
+.env
+
+# --- Cache de testing ---
+.pytest_cache/
+
+# --- Archivos comprimidos y pesados ---
+*.zip
+
+# --- Backups locales ---
+app_backup_*/
+tests_backup_*/
+
+# --- Datos fuente sensibles del ETL (Excel/Access, no el código) ---
+ELOMED/
+*.xlsx
+*.xls
+*.mdb
+
+# --- Volcados/dumps de base de datos (datos reales, no el esquema) ---
+# Los scripts de migración numerados (01_..07_..sql) SÍ se versionan:
+# son código, definen el esquema. Lo que NO se versiona es un dump con
+# datos reales de producción, como el que generás con mysqldump.
+17_schema_and_data_definitivo.sql
+*_dump.sql
+*_backup.sql
+
+# --- Sistema ---
+.DS_Store
 # Archivos comprimidos y pesados
 *.zip
 

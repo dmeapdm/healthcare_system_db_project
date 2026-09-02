@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import auth, health
+from app.routers import auth, equipments, health, work_orders
 
 app = FastAPI(
     title="Gestión Biomédica API",
@@ -10,3 +10,5 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(equipments.router)
+app.include_router(work_orders.router)
